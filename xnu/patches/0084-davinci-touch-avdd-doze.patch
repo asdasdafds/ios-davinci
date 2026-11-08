@@ -1,0 +1,66 @@
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -507,7 +507,11 @@ touch_gt9886(void)
+ 	}
+ 	for (unsigned i = 0; i < n; ++i) {
+ 		const uint8_t *p = buf + GT9886_HEAD_LEN + i * GT9886_POINT_LEN;
+-		unsigned id = p[0];
++		/* Vendor: id = byte & 0x0f; >= 0x80 marks a pen (no pen on davinci). */
++		if (p[0] >= 0x80u) {
++			continue;
++		}
++		unsigned id = p[0] & 0x0fu;
+ 		unsigned px = (unsigned)p[1] | ((unsigned)p[2] << 8);
+ 		unsigned py = (unsigned)p[3] | ((unsigned)p[4] << 8);
+ 		if (id >= TOUCH_MAX || (mask & (1u << id)) ||
+@@ -661,6 +665,10 @@ touch_thread(void *arg, wait_result_t result)
+ 	 * Keep GT9886 reset asserted during regulator initialization. */
+ 	touch_gpio(9, 0, 3, 3, false, false); /* IRQ input */
+ 	touch_gpio(8, 0, 3, 3, true, false);  /* reset low */
++	/* davinci DT goodix,avdd-gpio = <&tlmm 5>: 1.8 V touch supply enable.
++	 * Xiaomi goodix_ts_power_on() drives it high before the L6C regulator. */
++	touch_gpio(5, 0, 0, 0, true, true);
++	touch_wait(5);
+ 	int power_error = sweet_rpmh_vreg_enable("ldoc6", 3000);
+ 	if (power_error) {
+ 		printf("DAVINCI TOUCH: L6C RPMh enable failed %d; probes skipped\n", power_error);
+@@ -672,6 +680,27 @@ touch_thread(void *arg, wait_result_t result)
+ 	touch_gpio(7, 1, 0, 0, false, false);
+ 	touch_gpio(8, 0, 3, 3, true, true);  /* release reset */
+ 	touch_wait(105); /* >=5 ms dev-confirm + 100 ms firmware boot */
++	/* Normandy firmware NAKs register access while dozing. Xiaomi's
++	 * goodix_set_i2c_doze_mode(false): write 0xAA to 0x30F0, poll 0x3100
++	 * for 0xBB. We poll for events instead of using the IRQ, so leave doze
++	 * off for the whole session (never re-enabled with 0xCC). */
++	{
++		const uint8_t doze_off[3] = {0x30, 0xf0, 0xaa};
++		uint8_t ds = 0;
++		int de = touch_msg(0x5d, doze_off, sizeof(doze_off), NULL, 0, false);
++		touch_wait(1);
++		for (unsigned i = 0; i < 10u; ++i) {
++			de = touch_read(0x5d, 0x3100, true, &ds, 1);
++			if (!de && ds == 0xbb) {
++				break;
++			}
++			if (!de && ds != 0xaa) {
++				(void)touch_msg(0x5d, doze_off, sizeof(doze_off), NULL, 0, false);
++			}
++			touch_wait(10);
++		}
++		printf("DAVINCI TOUCH: doze off err=%d stat=%#x (want 0xbb)\n", de, ds);
++	}
+ 	/* Probe only GT9886: no unrelated I2C address or legacy register scans. */
+ 	uint8_t gid[32];
+ 	st.probing = true;
+@@ -685,8 +714,9 @@ touch_thread(void *arg, wait_result_t result)
+ 		goto out;
+ 	}
+ 	printf("DAVINCI TOUCH: GT9886 Normandy identified\n");
+-	/* Boot-time safety gate: default to PID probe only. */
+-	int probe_only = 1;
++	/* Events on by default now that power/doze follow the vendor sequence;
++	 * davinci_touch_probeonly=1 restores the PID-probe-only safety gate. */
++	int probe_only = 0;
+ 	(void)PE_parse_boot_argn("davinci_touch_probeonly", &probe_only, sizeof(probe_only));
+ 	if (probe_only) {
+ 		printf("DAVINCI TOUCH: probe-only completed; events disabled\n");

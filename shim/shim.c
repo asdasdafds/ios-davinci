@@ -74,6 +74,34 @@ static uint64_t sgi_self(unsigned id)
 	       (1U << (m & 0xf));		/* target list: Aff0 */
 }
 
+/*
+ * davinci: Samsung EA8076 AMOLED in DSI *command* mode (DT dsi_ss_fhd_ea_f10_cmd),
+ * unlike sweet's video-mode panel. A command-mode panel only shows a new frame
+ * when MDP pushes one, so CPU writes to ABL's splash framebuffer stay invisible
+ * unless MDP autorefresh is on. sdmmagpie is SDE 5.x: tear check and
+ * autorefresh live in the INTF block (sde-intf-size 0x2b8). DSI0 = INTF1 at
+ * MDP + 0x6b800 (sde-intf-type "dp","dsi","dsi","dp").
+ * Only acts when ABL left tear check enabled (= command mode); a video-mode
+ * panel reads TEAR_CHECK_EN 0 and nothing is written.
+ */
+#define MDP_BASE		0x0ae00000UL
+#define INTF1_BASE		(MDP_BASE + 0x6b800UL)
+#define INTF_TEAR_CHECK_EN	0x280
+#define INTF_TEAR_AUTOREFRESH	0x2b4
+#define AUTOREFRESH_EN		(1U << 31)
+
+static void cmd_panel_autorefresh(void)
+{
+	uint32_t te = rd32(INTF1_BASE + INTF_TEAR_CHECK_EN);
+	uint32_t ar = rd32(INTF1_BASE + INTF_TEAR_AUTOREFRESH);
+	if ((te & 1) && !(ar & AUTOREFRESH_EN)) {
+		/* Refresh from the framebuffer on every TE pulse (frame count 1). */
+		wr32(INTF1_BASE + INTF_TEAR_AUTOREFRESH, AUTOREFRESH_EN | 1);
+		__asm__ volatile("dsb sy" ::: "memory");
+	}
+	con_hex2("AUTOREF", "te=", te, "cfg=", rd32(INTF1_BASE + INTF_TEAR_AUTOREFRESH));
+}
+
 static uint64_t smc(uint64_t fn, uint64_t a1, uint64_t a2, uint64_t a3)
 {
 	register uint64_t x0 __asm__("x0") = fn;
@@ -372,10 +400,14 @@ static uint32_t to_us(uint64_t ticks)
 
 void shim_main(uint64_t dtb)
 {
+	/* First, so every later console write is actually pushed to the panel. */
+	stage = "cmd panel autorefresh";
+	cmd_panel_autorefresh();
 #ifdef DAVINCI_DIAG_ONLY
     stage = "davinci framebuffer";
 
     con_clear(RED);
+    cmd_panel_autorefresh();	/* print te/cfg on the cleared screen */
     con_str("SHIM", "Xiaomi Mi 9T");
     con_str("BOARD", "davinci / SM7150");
     con_str("TEST", "Framebuffer write OK");
@@ -401,7 +433,8 @@ void shim_main(uint64_t dtb)
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
 	stage = "loader";
 	con_clear(RED);
-	con_str("SHIM", "sweet milestone 4: xnu loader");
+	con_str("SHIM", "davinci: xnu loader");
+	cmd_panel_autorefresh();	/* idempotent: just reports te/cfg */
 	con_skip();
 	const char *why = loader_boot(dtb);
 	con_str("LOADER", why);
