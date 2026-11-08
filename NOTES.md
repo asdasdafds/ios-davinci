@@ -1,5 +1,52 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## >>> DAVINCI HANDOFF 2026-11-09 (Mi 9T, SDM730 = same SM7150 SoC as sweet) <<<
+
+Everything below this section is the upstream **sweet** log; the README's
+"home screen" milestone is sweet's. davinci status is NOT verified on hardware
+by this session (no phone attached yet). Branch `davinci-bringup`, commit 265675e.
+
+**Observed from Xiaomi davinci-p-oss DTS (`davinci-sdmmagpie.dtsi`) vs this repo:**
+- Touch GT9886 @0x5d on QUP SE7, reset GPIO8, irq GPIO9, vtouch = PM6150L L6
+  (1.648-3.1 V; driver sets 3.0 V) - matches 0082. **Missed by 0082:**
+  `goodix,avdd-gpio = <&tlmm 5>` (1.8 V enable, NORTH tile, mux 0); Xiaomi's
+  goodix_ts_power_on() drives it high before the regulator. Normandy also NAKs
+  while dozing; vendor wraps every access in doze-off (0x30F0=0xAA, poll
+  0x3100 for 0xBB). -> **0084** adds both, masks contact id &0x0f, skips pen
+  records, and makes events default-on (`davinci_touch_probeonly=1` = old gate).
+  Event layout in 0082 (12-byte first read, +12 continuation, u8 sum==0) matches
+  the vendor goodix_touch_handler.
+- Panel is `dsi_ss_fhd_ea_f10_cmd` = **command mode** (sweet: video mode). CPU
+  writes to the 0x9c000000 splash FB only appear if MDP autorefresh is on.
+  sdmmagpie SDE 5.x: tear check/autorefresh in INTF (size 0x2b8); DSI0 = INTF1 @
+  0xae6b800, TEAR_CHECK_EN +0x280, AUTOREFRESH_CONFIG +0x2b4 (BIT31|frames).
+  -> shim `cmd_panel_autorefresh()` runs first in shim_main, writes only if
+  TE is enabled and autorefresh off, prints `AUTOREF te=.. cfg=..`.
+  Guess, unverified: ABL may already leave autorefresh on (then it is a no-op).
+- Pop-up camera motor enable is TLMM GPIO90 (sweet used GPIO90 as touch power):
+  0082 already avoids it - keep it that way.
+- TZ carve-out enlarged on davinci: removed_region 0x86200000+0x4900000. Payload
+  RAM is the upper bank (0x1_0000_0000) so unaffected; recheck if lower RAM used.
+
+**Build (Windows host, WSL Ubuntu-24.04 has aarch64-linux-gnu-gcc, fastboot, img2simg, dtc, sudo):**
+`git config core.autocrlf false` is set in this clone (CRLF broke every .sh).
+AOSP mkbootimg cloned to `aosp-mkbootimg/` (gitignored). `shim/build.sh` now
+works with Linux or Homebrew toolchains; `DTB=`, `MKBOOTIMG=`, `EXTRA_CFLAGS=`.
+Both normal and `-DDAVINCI_DIAG_ONLY` builds compile warning-free (tested with
+a placeholder DTB only; those images were deleted - not bootable).
+
+**Next concrete steps:**
+1. Stock davinci `boot.img` -> `dtb/davinci.dtb` (tools/unpack_bootv2.py).
+2. `EXTRA_CFLAGS=-DDAVINCI_DIAG_ONLY bash shim/build.sh` -> `fastboot boot`
+   (non-destructive). Expect red screen with SHIM/BOARD/AUTOREF/UFS lines.
+   Nothing visible -> autorefresh path wrong; record te/cfg if partially seen.
+3. Kernel with 0084 via GitHub Actions on a fork (`gh workflow run xnu.yml`).
+4. IPSW iPhone10,3 20H392 -> mkiosroot.sh in WSL (needs apfs-fuse, hfsprogs).
+5. Flash userdata (DESTROYS Android data - confirm with user first), boot.
+6. GPU: user mentioned "hackios" sources for Metal/Adreno; not received yet.
+   UniXNU (Adreno740/AdrenoMetal, SM8550) is the closest public reference; the
+   SDM730 GPU is Adreno 618, so any port is a separate large project.
+
 ## Agent handoff / active work (2026-10-15, latest)
 
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
