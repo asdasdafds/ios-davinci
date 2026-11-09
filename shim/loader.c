@@ -74,6 +74,106 @@ static int magic_ok(const char *m)
 	return 1;
 }
 
+/*
+ * davinci's ABL refuses `fastboot boot` images with a ramdisk of ~16 MiB+
+ * ("Load Error"), so the payload may come LZ4-compressed:
+ *   "SWEETLZ4" | u64 raw_size | LZ4 legacy stream (magic 0x184c2102, then
+ *   [u32 block_size][block] ..., each block <= 8 MiB decompressed)
+ * Byte accesses only: with the MMU off all memory is Device memory.
+ */
+static int lz4_magic(const char *m)
+{
+	static const char want[] = "SWEETLZ4";
+	for (int i = 0; i < 8; i++)
+		if (m[i] != want[i])
+			return 0;
+	return 1;
+}
+
+static uint32_t rd_le32(const volatile uint8_t *p)
+{
+	return p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+/* One LZ4 block; returns bytes written or -1 on malformed input. */
+static int64_t lz4_block(const volatile uint8_t *src, uint64_t n,
+    volatile uint8_t *dst, uint64_t cap)
+{
+	const volatile uint8_t *ip = src, *iend = src + n;
+	uint64_t o = 0;
+	while (ip < iend) {
+		uint8_t tok = *ip++;
+		uint64_t lit = tok >> 4;
+		if (lit == 15) {
+			uint8_t b;
+			do {
+				if (ip >= iend)
+					return -1;
+				b = *ip++;
+				lit += b;
+			} while (b == 255);
+		}
+		if ((uint64_t)(iend - ip) < lit || o + lit > cap)
+			return -1;
+		for (uint64_t i = 0; i < lit; i++)
+			dst[o++] = *ip++;
+		if (ip >= iend)
+			break;			/* last sequence: literals only */
+		if (iend - ip < 2)
+			return -1;
+		uint64_t off = ip[0] | (uint64_t)ip[1] << 8;
+		ip += 2;
+		if (!off || off > o)
+			return -1;
+		uint64_t len = tok & 15;
+		if (len == 15) {
+			uint8_t b;
+			do {
+				if (ip >= iend)
+					return -1;
+				b = *ip++;
+				len += b;
+			} while (b == 255);
+		}
+		len += 4;
+		if (o + len > cap)
+			return -1;
+		for (uint64_t i = 0; i < len; i++, o++)
+			dst[o] = dst[o - off];	/* overlapping copy is intended */
+	}
+	return (int64_t)o;
+}
+
+/* Decompress a SWEETLZ4 payload at src (ramdisk) to dst; 0 on success. */
+static const char *lz4_payload(uintptr_t src, uint64_t src_len, uintptr_t dst)
+{
+	const volatile uint8_t *s = (const volatile uint8_t *)src;
+	uint64_t raw = rd_le32(s + 8) | (uint64_t)rd_le32(s + 12) << 32;
+	uint64_t pos = 16, out = 0;
+	if (rd_le32(s + pos) != 0x184c2102)
+		return "lz4: bad stream magic";
+	pos += 4;
+	while (pos + 4 <= src_len && out < raw) {
+		uint32_t bs = rd_le32(s + pos);
+		if (bs == 0x184c2102) {		/* concatenated legacy frames */
+			pos += 4;
+			continue;
+		}
+		pos += 4;
+		if (pos + bs > src_len)
+			return "lz4: truncated block";
+		int64_t got = lz4_block(s + pos, bs, (volatile uint8_t *)dst + out, raw - out);
+		if (got < 0)
+			return "lz4: corrupt block";
+		out += (uint64_t)got;
+		pos += bs;
+	}
+	if (out != raw)
+		return "lz4: size mismatch";
+	con_hex2("LZ4", "raw=", raw, "dst=", dst);
+	return 0;
+}
+
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
 
 const char *loader_boot(uintptr_t dtb)
@@ -85,6 +185,18 @@ const char *loader_boot(uintptr_t dtb)
 		return "no initrd in /chosen";
 	con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
 
+	if (lz4_magic((const char *)rd_start)) {
+		/* Decompress 64 MiB past the ramdisk (free lower-bank RAM ABL loaded into),
+		 * then treat the result as the ramdisk. */
+		uintptr_t dst = ((rd_end + 0xffffffUL) & ~0xffffffUL) + 0x4000000UL;
+		const char *err = lz4_payload(rd_start, rd_end - rd_start, dst);
+		if (err)
+			return err;
+		const volatile uint8_t *h = (const volatile uint8_t *)rd_start;
+		uint64_t raw = rd_le32(h + 8) | (uint64_t)rd_le32(h + 12) << 32;
+		rd_start = dst;
+		rd_end = dst + raw;
+	}
 	const struct payload *p = (const struct payload *)rd_start;
 	if (!magic_ok(p->magic))
 		return "no SWEETXNU payload";

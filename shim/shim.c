@@ -90,8 +90,27 @@ static uint64_t sgi_self(unsigned id)
 #define INTF_TEAR_AUTOREFRESH	0x2b4
 #define AUTOREFRESH_EN		(1U << 31)
 
+/* MDP is only safe to touch while its clocks and power domain are on: reading
+ * an unclocked block can hang the bus. Sources: gcc/dispcc-sdmmagpie.c, gdsc dtsi. */
+#define GCC_DISP_AHB_CBCR	(0x00100000UL + 0xb00c)
+#define DISPCC_BASE		0x0af00000UL
+#define DISPCC_MDSS_GDSCR	(DISPCC_BASE + 0x3000)
+#define DISPCC_MDSS_AHB_CBCR	(DISPCC_BASE + 0x2080)
+#define CBCR_CLK_OFF		(1U << 31)
+#define GDSC_PWR_ON		(1U << 31)
+
 static void cmd_panel_autorefresh(void)
 {
+	uint32_t gahb = rd32(GCC_DISP_AHB_CBCR);
+	if (gahb & CBCR_CLK_OFF) {
+		con_hex("AUTOREF skip gcc_disp_ahb", gahb);
+		return;
+	}
+	uint32_t gdsc = rd32(DISPCC_MDSS_GDSCR), dahb = rd32(DISPCC_MDSS_AHB_CBCR);
+	if (!(gdsc & GDSC_PWR_ON) || (dahb & CBCR_CLK_OFF)) {
+		con_hex2("AUTOREF skip", "gdsc=", gdsc, "ahb=", dahb);
+		return;
+	}
 	uint32_t te = rd32(INTF1_BASE + INTF_TEAR_CHECK_EN);
 	uint32_t ar = rd32(INTF1_BASE + INTF_TEAR_AUTOREFRESH);
 	if ((te & 1) && !(ar & AUTOREFRESH_EN)) {
@@ -400,6 +419,15 @@ static uint32_t to_us(uint64_t ticks)
 
 void shim_main(uint64_t dtb)
 {
+	/*
+	 * Before anything else: arm "reboot to bootloader". Any later warm reset
+	 * (XNU panic/reboot via PSCI, watchdog, our own reset) then lands in ABL
+	 * fastboot instead of booting this image again. ABL consumes the reason,
+	 * so a deliberate `fastboot reboot` still boots normally.
+	 */
+	wr32(IMEM_RESTART_REASON, RESTART_BOOTLOADER);
+	__asm__ volatile("dsb sy" ::: "memory");
+
 	/* First, so every later console write is actually pushed to the panel. */
 	stage = "cmd panel autorefresh";
 	cmd_panel_autorefresh();
@@ -425,8 +453,8 @@ void shim_main(uint64_t dtb)
 
     __asm__ volatile("dsb sy" ::: "memory");
 
-    for (;;)
-        __asm__ volatile("wfe");
+    /* Back to fastboot after 60 s instead of hanging forever. */
+    reset(60);
 #endif
 	struct mmu_info mi;
 
