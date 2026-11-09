@@ -78,7 +78,25 @@ What it took (all observed on the phone):
 - The IMEM reboot-to-bootloader flag did not visibly bring the diag image back to
   fastboot after its 60 s reset: unverified, do not rely on it.
 
+**First davinci kernel log (logs/boot-0085-logo.txt, ~8 min run, 47 flushes), observed:**
+- 6/6 CPUs, UFS userdata LUN0 first block 0x294200 (110221 MiB), HFSX root mounted rw,
+  launchd + daemons + backboardd + SpringBoard run. bluetoothd / fairplayd.H2 relaunch loop
+  (no hardware), driverkitd killed once (sig 9).
+- **Touch works** (0084): doze off stat=0xbb, GT9886 pid 9886 fw 03.04.02.29, events incl.
+  edge flags. Power key works (SPMI). L6C RPMh vote ok (cmd-db at 0x85f20000).
+- **GPU probe (0085)**: gpu_cfg_ahb + ddrss_gpu_axi running; memnoc_gfx, snoc_dvm off;
+  CX and GX GDSC collapsed; all GPUCC branches off -> ABL leaves the GPU fully off.
+  cmd-db pointer at 0xc3f000c reads 0x107885f20000 (low 32 bits = 0x85f20000 is right;
+  upper word is not part of the pointer).
+- backboardd opened AppleCLCD, `SWEET FB: display on`, but **no swap counter** and the
+  screen keeps the Apple logo: **SpringBoard t0 is blocked at the same pc 0x1da8f1ad0
+  (lr 0x1e9de8140) in all 4 samples** (bt 0x199f697b8 0x199ed0bc0 0x199f96238 ...
+  0x208ed8c64 0x1a602f0f4 ...; slide 0x182e0000). Needs symbolication against
+  the 20H392 shared cache (`ipsw dyld a2s`, addr - slide). Not done yet.
+
 **Next concrete steps:**
+0. Symbolicate SpringBoard's blocked main thread; fix what it waits for (root tweak or
+   kernel stand-in), like sweet's CommCenter/Setup fixes.
 1. ~~Stock davinci `boot.img` -> `dtb/davinci.dtb`~~ done (pmOS U-Boot DTB, see above).
 2. `EXTRA_CFLAGS=-DDAVINCI_DIAG_ONLY bash shim/build.sh` -> `fastboot boot`
    (non-destructive). Expect red screen with SHIM/BOARD/AUTOREF/UFS lines.
