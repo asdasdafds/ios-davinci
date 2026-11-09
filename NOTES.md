@@ -35,8 +35,29 @@ works with Linux or Homebrew toolchains; `DTB=`, `MKBOOTIMG=`, `EXTRA_CFLAGS=`.
 Both normal and `-DDAVINCI_DIAG_ONLY` builds compile warning-free (tested with
 a placeholder DTB only; those images were deleted - not bootable).
 
+**UPDATE 2026-11-09 (later), observed:**
+- Fork `asdasdafds/ios-davinci`, branch `davinci-bringup`. CI needs `macos-15`
+  (macos-14 refused for this account). Kernels: run 42535150729 (0084),
+  42536885149 (0085 = + read-only Adreno 618 probe, `davinci_gpuprobe=1`), both green,
+  in `xnu/out-0084`, `xnu/out-0085`.
+- Phone: Mi 9T (adb serial 8d43bb88), OrangeFox, postmarketOS installed. userdata =
+  sda32 (found by GPT name, fine). Backups in `backup/` (persist, persistbak,
+  modemst1/2, fsg, fsc, boot(pmOS), dtbo, vbmeta, recovery(OFOX), abl, vendor) all
+  SHA-256 verified against the phone. Use `dd ... 2>/dev/null` inside exec-out or
+  dd's stats get appended to the image.
+- Phone `vendor` ext4 has a corrupt root directory (debugfs) -> GPU/BT firmware
+  must come from the official ROM (downloading in WSL ~/work/rom, slow CDN).
+- `dtb/davinci.dtb` = OrangeFox recovery's base DTB (SDMMAGPIE, msm-id 0x16d);
+  ABL applies the dtbo partition overlay.
+- Built `shim/out/shim-boot-diag.img` and `shim/out/shim-boot-0085.img`
+  (kernel 0085 + `shim/out/davinci.adt` from research/ipsw-x/d22ap.adt). Not booted yet:
+  Windows lacks a driver for fastboot 18d1:d00d (Google USB driver needed, manual pick).
+- Host: Windows platform-tools in `../tools-host/platform-tools`. PowerShell 5.1
+  strips inner quotes for native exes: push scripts instead of inline adb shell.
+  WSL: apfs-fuse built (/usr/local/bin), hfsplus.ko being built for WSL kernel.
+
 **Next concrete steps:**
-1. Stock davinci `boot.img` -> `dtb/davinci.dtb` (tools/unpack_bootv2.py).
+1. ~~Stock davinci `boot.img` -> `dtb/davinci.dtb`~~ done (OFOX DTB).
 2. `EXTRA_CFLAGS=-DDAVINCI_DIAG_ONLY bash shim/build.sh` -> `fastboot boot`
    (non-destructive). Expect red screen with SHIM/BOARD/AUTOREF/UFS lines.
    Nothing visible -> autorefresh path wrong; record te/cfg if partially seen.
