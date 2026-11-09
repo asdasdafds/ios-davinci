@@ -1,0 +1,110 @@
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -104,6 +104,11 @@
+ 	uint32_t      fWidth, fHeight, fRowBytes;
+ 	uint32_t      fLogicalW, fLogicalH;     /* size reported to userland */
+ 	int32_t       fOffX, fOffY;             /* logical origin of the panel */
++	/* davinci: the presented 1125x2436 display is scaled onto the 1080x2340 panel
++	 * (same 19.5:9 shape) instead of cropped, so status bar and HUDs stay visible.
++	 * fScaleX/Y[panel px] = logical px (nearest neighbour). sweetfb_crop=1: old crop. */
++	bool          fScale;
++	uint16_t     *fScaleX, *fScaleY;
+ 	uintptr_t     fPixels;          /* kernel mapping of the panel memory */
+ 	IOMemoryMap  *fMap;
+ 	SweetSurface *fSurface;         /* the panel memory as an IOSurface */
+@@ -176,6 +181,24 @@
+ 	}
+ 	fOffX = (int32_t)(fLogicalW - fWidth) / 2;
+ 	fOffY = (int32_t)(fLogicalH - fHeight) / 2;
++	int crop = 0;
++	PE_parse_boot_argn("sweetfb_crop", &crop, sizeof(crop));
++	fScale = false;
++	if (!crop && (fLogicalW != fWidth || fLogicalH != fHeight)) {
++		fScaleX = (uint16_t *)IOMallocData(fWidth * sizeof(uint16_t));
++		fScaleY = (uint16_t *)IOMallocData(fHeight * sizeof(uint16_t));
++		if (fScaleX != NULL && fScaleY != NULL) {
++			/* Sample at pixel centres: logical = (2*panel+1)*L / (2*P). */
++			for (uint32_t x = 0; x < fWidth; x++) {
++				fScaleX[x] = (uint16_t)(((uint64_t)(2 * x + 1) * fLogicalW) / (2 * fWidth));
++			}
++			for (uint32_t y = 0; y < fHeight; y++) {
++				fScaleY[y] = (uint16_t)(((uint64_t)(2 * y + 1) * fLogicalH) / (2 * fHeight));
++			}
++			fScale = true;
++			fOffX = fOffY = 0;
++		}
++	}
+ 	fLock = IOLockAlloc();
+ 	fClients = OSArray::withCapacity(4);
+ 	fSurface = sweet_surface_create_physical(fPhys, fWidth, fHeight, fRowBytes, SWEET_FB_FORMAT_BGRA);
+@@ -289,7 +312,7 @@
+ static uint32_t sweet_fb_swaps_logged;
+ static uint64_t sweet_fb_swap_count;
+ 
+-/* Copy each enabled layer's surface into the panel memory (no scaling). */
++/* Copy each enabled layer's surface into the panel memory (scaled on davinci). */
+ /*
+  * A swap only records the frame: copying 10 MB into the panel on every
+  * swap (backboardd presents at 60 Hz) took the whole CPU. The vsync timer
+@@ -358,6 +381,43 @@
+ 		}
+ 		if (dx < 0 || dy < 0) {
+ 			dx = dy = 0;
++		}
++		if (fScale) {
++			/* Clip the source rect to the surface, then scale logical -> panel. */
++			if (w > (int32_t)s->width - sx) {
++				w = (int32_t)s->width - sx;
++			}
++			if (h > (int32_t)s->height - sy) {
++				h = (int32_t)s->height - sy;
++			}
++			uint64_t slast = (uint64_t)s->offset + (uint64_t)(sy + h - 1) * s->bytesPerRow +
++			    (uint64_t)(sx + w) * 4;
++			if (src != 0 && bpe == 4 && w > 0 && h > 0 && s->elementWidth == 1 &&
++			    s->elementHeight == 1 && s->memory != NULL && slast <= s->memory->getLength()) {
++				/* Panel columns whose logical x falls in [dx, dx+w): the map is monotonic. */
++				uint32_t px0 = 0, px1 = fWidth;
++				while (px0 < fWidth && fScaleX[px0] < dx) {
++					px0++;
++				}
++				px1 = px0;
++				while (px1 < fWidth && fScaleX[px1] < dx + w) {
++					px1++;
++				}
++				const uintptr_t base = src + s->offset + (uint64_t)sx * 4;
++				for (uint32_t py = 0; py < fHeight; py++) {
++					int32_t ly = fScaleY[py];
++					if (ly < dy || ly >= dy + h) {
++						continue;
++					}
++					const uint32_t *srow = (const uint32_t *)(base + (uint64_t)(sy + ly - dy) * s->bytesPerRow);
++					uint32_t *drow = (uint32_t *)(fPixels + (uint64_t)py * fRowBytes);
++					for (uint32_t px = px0; px < px1; px++) {
++						drow[px] = srow[fScaleX[px] - dx];
++					}
++				}
++			}
++			s->release();
++			continue;
+ 		}
+ 		/* Logical (presented) display coordinates -> panel coordinates. */
+ 		dx -= fOffX;
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -438,6 +438,15 @@
+ 	fLogicalH = native ? 2340 : 2436;
+ 	fOffX = (fLogicalW - 1080) / 2;
+ 	fOffY = (fLogicalH - 2340) / 2;
++	int crop = 0;
++	PE_parse_boot_argn("sweetfb_crop", &crop, sizeof(crop));
++	if (!crop) {
++		/* SweetFramebuffer scales the whole presented display onto the panel:
++		 * panel coordinates normalize directly. */
++		fLogicalW = 1080;
++		fLogicalH = 2340;
++		fOffX = fOffY = 0;
++	}
+ 	/* The digitizer covers the main display (backboardd maps it 1:1). */
+ 	setProperty("DisplayIntegrated", kOSBooleanTrue);
+ 	setProperty("SurfaceWidth", (unsigned long long)(68 << 16), 32);	/* mm, 16.16 */
