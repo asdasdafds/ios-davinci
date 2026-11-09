@@ -165,6 +165,34 @@ possibly needs patching bluetoothd. **Lowest priority of the four.**
 
 ---
 
+## 4b. Cellular / RIL (calls, SMS, mobile data)
+
+**Status**: none. CommCenter is removed from launchd.plist by
+`tools/sweet-root-tweaks.py` (on sweet it blocked Setup and SpringBoard waiting for a
+baseband); Phone/Messages block in telephony XPC for the same reason.
+
+**What it takes**
+1. **Boot the modem** (MPSS remoteproc, shared with Wi-Fi, section 3): `modem.mdt`
+   into the mpss carve-out 0x8b000000, TZ PAS id 4, SMP2P, QMI service directory,
+   plus the `modemst1/2`, `fsg`, `fsc` EFS partitions served to the modem (rmtfs;
+   davinci DT: rmtfs at 0xf2e01000). hakios on redwood: modem boots, sees the network,
+   SIM bound, **no registration yet**.
+2. **Data only** (easier): QMI WDS to start a session, IPA hardware data path, an
+   ifnet (`pdp_ip0`-like) that configd accepts. hakios has IPA + `en1` in place.
+   ~2 000-4 000 lines beyond the modem boot.
+3. **Calls/SMS through iOS (the wall)**: CommCenter speaks Apple's baseband
+   protocols (ARI for Intel, Apple's QMI variant over its own IPC transport) and needs
+   activation/SEP and carrier bundles. A Xiaomi modem speaks stock QMI with Xiaomi
+   firmware. It would need either a translation layer that impersonates Apple's
+   baseband to CommCenter, or a replacement for CommCenter + the telephony daemons.
+   Nobody has done either; size unknown, research project.
+
+**Back up EFS first** (`modemst1/2`, `fsg`, `fsc`, `persist`: already in
+`backup/`); a modem bring-up that corrupts EFS can lose the IMEI/calibration.
+**Order**: after Wi-Fi (same modem boot), data before voice.
+
+---
+
 ## 5. App Store and apps
 
 - **App Store, Apple ID, iCloud, FaceTime/iMessage: not achievable** and not a
