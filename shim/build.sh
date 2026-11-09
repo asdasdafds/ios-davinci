@@ -48,11 +48,23 @@ if [ ! -f "$DTB" ]; then
 	echo "error: stock DTB $DTB missing (python3 tools/unpack_bootv2.py backup/boot.img dtb/boot_unpacked; cp dtb/boot_unpacked/dtb dtb/davinci.dtb)" >&2
 	exit 1
 fi
-python3 "$MKBOOTIMG" --header_version 2 --kernel out/Image --ramdisk out/ramdisk.bin \
-	--dtb "$DTB" --base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 \
-	--tags_offset 0x100 --dtb_offset 0x1f00000 --pagesize 4096 \
-	--os_version 17.0.0 --os_patch_level 2035-06 \
-	--cmdline "console=null" -o out/shim-boot.img
+if [ "${BOOTFMT:-v0gz}" = v0gz ]; then
+	# davinci's ABL boots what pmOS's U-Boot image looks like: header v0, kernel =
+	# gzip(Image) with the DTB appended (Image.gz-dtb), no DTB section. It refuses
+	# the v2 + raw Image + DTB-section layout that sweet's ABL accepted.
+	gzip -9 -n -c out/Image > out/Image.gz
+	cat out/Image.gz "$DTB" > out/Image.gz-dtb
+	python3 "$MKBOOTIMG" --header_version 0 --kernel out/Image.gz-dtb --ramdisk out/ramdisk.bin \
+		--base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 \
+		--tags_offset 0x100 --pagesize 4096 \
+		--cmdline "console=null" -o out/shim-boot.img
+else
+	python3 "$MKBOOTIMG" --header_version 2 --kernel out/Image --ramdisk out/ramdisk.bin \
+		--dtb "$DTB" --base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 \
+		--tags_offset 0x100 --dtb_offset 0x1f00000 --pagesize 4096 \
+		--os_version 17.0.0 --os_patch_level 2035-06 \
+		--cmdline "console=null" -o out/shim-boot.img
+fi
 # Host render of the console layout.
 gcc -O1 -Wall -o out/host_test console.c host_test.c && ./out/host_test
 ls -l out/Image out/shim-boot.img

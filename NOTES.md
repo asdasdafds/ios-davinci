@@ -56,8 +56,30 @@ a placeholder DTB only; those images were deleted - not bootable).
   strips inner quotes for native exes: push scripts instead of inline adb shell.
   WSL: apfs-fuse built (/usr/local/bin), hfsplus.ko being built for WSL kernel.
 
+**MILESTONE 2026-11-09 ~21:22: XNU 0085 reaches the Apple logo on the Mi 9T** (boot
+partition = shim-boot-0085.img, userdata = ios16-root-20H392 HFSX, flashed 9 min).
+What it took (all observed on the phone):
+- davinci ABL **`fastboot boot` never hands over** (replies "Booting OKAY", stays in
+  fastboot; even pmOS U-Boot). Only the **boot partition** boots: `fastboot flash boot X`
+  then reboot. Back to fastboot: Power+VolDown. After a large flash ABL hangs: replug USB.
+- Stock vbmeta (verification on) -> "Load Error" for everything: user flashed
+  backup/vbmeta.img (flags=3).
+- **dtbo partition must be blank** (pmOS state, backup/dtbo.img is all zeros): Xiaomi
+  dtbo overlays don't apply to our DTB -> ABL silently refuses to boot.
+- **DTB must carry davinci board-id <0x28 0>** (`dtb/davinci.dtb` = DTB appended to
+  pmOS U-Boot, "Xiaomi Mi 9T (Samsung)"); OFOX's base DTB has board-id 0 -> no match.
+- Boot image format: **header v0, kernel = gzip(Image) + appended DTB** (BOOTFMT=v0gz
+  default in shim/build.sh), like pmOS U-Boot.
+- ABL rejects ramdisks >=~16 MiB: payload is LZ4 (tools/lz4payload.py, SWEETLZ4);
+  shim decompresses to **0xc0000000** (free RAM; 64 MiB past the ramdisk hit
+  carve-outs: mpss/adsp/TZ live 0x85700000-0xa1600000).
+- Diag image draws (red screen, all lines readable) -> framebuffer at 0x9c000000 works on
+  the command-mode panel as left by ABL. AUTOREF values not yet recorded.
+- The IMEM reboot-to-bootloader flag did not visibly bring the diag image back to
+  fastboot after its 60 s reset: unverified, do not rely on it.
+
 **Next concrete steps:**
-1. ~~Stock davinci `boot.img` -> `dtb/davinci.dtb`~~ done (OFOX DTB).
+1. ~~Stock davinci `boot.img` -> `dtb/davinci.dtb`~~ done (pmOS U-Boot DTB, see above).
 2. `EXTRA_CFLAGS=-DDAVINCI_DIAG_ONLY bash shim/build.sh` -> `fastboot boot`
    (non-destructive). Expect red screen with SHIM/BOARD/AUTOREF/UFS lines.
    Nothing visible -> autorefresh path wrong; record te/cfg if partially seen.

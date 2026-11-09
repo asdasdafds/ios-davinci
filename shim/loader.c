@@ -167,6 +167,7 @@ static const char *lz4_payload(uintptr_t src, uint64_t src_len, uintptr_t dst)
 			return "lz4: corrupt block";
 		out += (uint64_t)got;
 		pos += bs;
+		con_hex2("LZ4 block", "out=", (uint32_t)out, "of=", (uint32_t)raw);
 	}
 	if (out != raw)
 		return "lz4: size mismatch";
@@ -186,9 +187,14 @@ const char *loader_boot(uintptr_t dtb)
 	con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
 
 	if (lz4_magic((const char *)rd_start)) {
-		/* Decompress 64 MiB past the ramdisk (free lower-bank RAM ABL loaded into),
-		 * then treat the result as the ramdisk. */
-		uintptr_t dst = ((rd_end + 0xffffffUL) & ~0xffffffUL) + 0x4000000UL;
+		/* Decompress into free lower-bank RAM, then treat the result as the ramdisk.
+		 * davinci DT: carve-outs end at 0xa1600000, ramdump_fb 0xaf000000-0xb0000000,
+		 * rmtfs from 0xf2e01000: 0xb0000000-0xf2e00000 is plain RAM. "64 MiB past the
+		 * ramdisk" (the first try) can land in mpss/adsp/TZ memory and hang the bus. */
+		uintptr_t dst = 0xc0000000UL;
+		if (rd_end > dst - 0x2000000UL && rd_start < dst + 0x2000000UL)
+			dst = 0xd0000000UL;
+		con_hex2("LZ4 to", "dst=", (uint32_t)dst, "in=", (uint32_t)(rd_end - rd_start));
 		const char *err = lz4_payload(rd_start, rd_end - rd_start, dst);
 		if (err)
 			return err;
